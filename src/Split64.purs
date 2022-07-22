@@ -11,17 +11,14 @@ import Data.Maybe (fromMaybe)
 import Data.Newtype (wrap)
 import Data.String (Pattern(..), stripSuffix)
 import Data.TextEncoder (encodeUtf8)
+import Node.Encoding (Encoding(..))
+import Node.FS.Sync (readTextFile)
 import Types.ByteArray (ByteArray, byteLength, subarray)
 
 main :: Effect Unit
 main = do
-  let str = "hello worldasdfsadfasdjfsadfasdfasfafadfasdfasfasdfasdfasdffdf쑕fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffdd"
-  log str
-  logShow (byteLength $ wrap $ encodeUtf8 str)
-  for_ (split64 str) \str' -> do
-    log str'
-    logShow (byteLength $ wrap $ encodeUtf8 str')
-  log (fold $ split64 str)
+  str <- readTextFile UTF8 "utf8.txt"
+  logShow ((fold $ split64 str) == str)
 
 -- | https://en.wikipedia.org/wiki/Specials_(Unicode_block)#Replacement_character
 -- | Added by `decodeUtf8` when decoding to replace malformed data
@@ -39,11 +36,12 @@ split64 = toUnfoldable <<< reverse <<< go Nil <<< wrap <<< encodeUtf8
   go acc view =
     let
       { result, error } = decodeUtf8 (subarray 0 64 view)
-      str = fromMaybe result do
+      { str, length } = fromMaybe { str: result, length: 64 } do
         -- Don't strip the suffix if there was no error, it is valid to end
         -- with a replacement character
         guard (not error)
-        stripSuffix (Pattern replacement) result
-      strLengthInBytes = byteLength $ wrap $ encodeUtf8 str
+        str <- stripSuffix (Pattern replacement) result
+        let length = byteLength $ wrap $ encodeUtf8 str
+        pure { str, length }
     in
-      go (str : acc) (subarray strLengthInBytes (byteLength view) view)
+      go (str : acc) (subarray length (byteLength view) view)
