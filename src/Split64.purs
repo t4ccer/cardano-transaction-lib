@@ -17,7 +17,7 @@ import Types.ByteArray (ByteArray, byteLength, subarray)
 
 main :: Effect Unit
 main = do
-  str <- roundtrip <$> readTextFile UTF8 "utf8.txt"
+  str <- readTextFile UTF8 "utf8.txt"
   logShow (isValidUtf8 str)
   logShow ((fold $ split64 str) == str)
 
@@ -31,8 +31,8 @@ foreign import decodeUtf8 :: ByteArray -> { result :: String, error :: Boolean }
 isValidUtf8 :: String -> Boolean
 isValidUtf8 = not <<< _.error <<< decodeUtf8 <<< wrap <<< encodeUtf8
 
-roundtrip :: String -> String
-roundtrip = _.result <<< decodeUtf8 <<< wrap <<< encodeUtf8
+-- roundtrip :: String -> String
+-- roundtrip = _.result <<< decodeUtf8 <<< wrap <<< encodeUtf8
 
 -- | `String` must be a valid unicode string
 split64 :: String -> Array String
