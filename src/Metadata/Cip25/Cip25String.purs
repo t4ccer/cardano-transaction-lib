@@ -23,7 +23,7 @@ import Control.Alt ((<|>))
 import Data.Array ((:))
 import Data.Array as Array
 import Data.Either (hush, note)
-import Data.Foldable (fold)
+import Data.Foldable (fold, foldMap)
 import Data.Maybe (Maybe(Nothing, Just), isJust)
 import Data.Newtype (unwrap, wrap)
 import Data.String.CodePoints as String
@@ -76,13 +76,14 @@ takeCip25String str =
   -- In UTF-8, characters from the U+0000..U+10FFFF range (the UTF-16
   --    accessible range) are encoded using sequences of 1 to 4 octets
   --
-  -- Hence we start at 64/4 = 16:
+  -- Hence we start at 64/4 = 16 (worst case, all code points take 4 bytes),
+  -- with a step equal to (64 - 16) / 2 = 24.
   case
     forwardSearch
       { minBound: 16
       , maxBound: 64
       , step: 24
-      , isTrue: \ix -> mkCip25String (String.take ix str)
+      , takeN: \ix -> mkCip25String (String.take ix str)
       }
     of
     Nothing /\ _ -> Nothing
@@ -96,20 +97,20 @@ takeCip25String str =
       }
 
 forwardSearch
-  :: forall a
-   . { step :: Int, minBound :: Int, maxBound :: Int, isTrue :: Int -> Maybe a }
+  :: forall (a :: Type)
+   . { step :: Int, minBound :: Int, maxBound :: Int, takeN :: Int -> Maybe a }
   -> Maybe a /\ Int
-forwardSearch { minBound, maxBound, isTrue, step }
-  | isJust (isTrue $ minBound + step) =
+forwardSearch { minBound, maxBound, takeN, step }
+  | isJust (takeN $ minBound + step) =
       if minBound + step <= maxBound then forwardSearch
-        { minBound: minBound + step, maxBound, isTrue, step }
-      else isTrue maxBound /\ maxBound
+        { minBound: minBound + step, maxBound, takeN, step }
+      else takeN maxBound /\ maxBound
   | otherwise =
       if step == 1 then
-        isTrue minBound /\ minBound
+        takeN minBound /\ minBound
       else
         forwardSearch
-          { minBound: minBound, maxBound, isTrue, step: step `div` 2 }
+          { minBound: minBound, maxBound, takeN, step: step `div` 2 }
 
 toCip25Strings :: String -> Array Cip25String
 toCip25Strings str = case takeCip25String str of
@@ -120,7 +121,7 @@ toCip25Strings str = case takeCip25String str of
       Nothing -> [ cip25String ]
 
 fromCip25Strings :: Array Cip25String -> String
-fromCip25Strings = fold <<< map unCip25String
+fromCip25Strings = foldMap unCip25String
 
 toDataString :: String -> PlutusData
 toDataString str = case toCip25Strings str of
@@ -140,6 +141,6 @@ toMetadataString str = case toCip25Strings str of
 
 fromMetadataString :: TransactionMetadatum -> Maybe String
 fromMetadataString datum = do
-  fromCip25Strings <$> ((Array.singleton <$> fromMetadata datum)) <|> do
+  fromCip25Strings <$> (Array.singleton <$> fromMetadata datum) <|> do
     bytes :: Array ByteArray <- fromMetadata datum
     hush $ decodeUtf8 $ unwrap $ fold bytes
