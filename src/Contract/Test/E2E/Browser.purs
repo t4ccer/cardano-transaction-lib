@@ -94,20 +94,27 @@ withBrowser
   :: forall (a :: Type)
    . TestOptions
   -> WalletExt
+  -> Array String
   -> (Toppokki.Browser -> Aff a)
   -> Aff a
-withBrowser opts ext = bracket (launchWithExtension ext opts) Toppokki.close
+withBrowser options wallet extraArgs = bracket
+  (launchWithExtension options wallet extraArgs)
+  Toppokki.close
 
 launchWithExtension
-  :: WalletExt -> TestOptions -> Aff Toppokki.Browser
+  :: TestOptions -> WalletExt -> Array String -> Aff Toppokki.Browser
 launchWithExtension
+  (TestOptions { chromeExe, chromeUserDataDir, namiDir, geroDir, noHeadless })
   walletExt
-  (TestOptions { chromeExe, chromeUserDataDir, namiDir, geroDir, noHeadless }) =
+  extraArgs =
   Toppokki.launch
     { args:
         [ "--disable-extensions-except=" <> extDir
         , "--load-extension=" <> extDir
-        ] <> if mode == Headless then [ "--headless=chrome" ] else []
+        ] <>
+          if mode == Headless then [ "--headless=chrome" ]
+          else []
+            <> extraArgs
     , headless: mode == Headless
     , userDataDir: chromeUserDataDir
     , executablePath: fromMaybe "" chromeExe
@@ -122,3 +129,4 @@ launchWithExtension
   extDir = case walletExt of
     GeroExt -> geroDir
     NamiExt -> namiDir
+

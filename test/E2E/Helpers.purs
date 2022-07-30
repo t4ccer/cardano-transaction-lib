@@ -67,7 +67,7 @@ runE2ETest
   -> WalletExt
   -> (RunningExample -> Aff a)
   -> TestPlanM Unit
-runE2ETest example opts ext f = test example $ withBrowser opts ext $
+runE2ETest example opts ext f = test example $ withBrowser opts ext [] $
   \browser -> withExample (exampleUrl example) browser
     ( \e -> do
         liftEffect $ log $ "Start Example " <> example
