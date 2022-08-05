@@ -364,46 +364,108 @@
       # Add a check that attempts to verify if the scaffolding template is
       # reasonably up-to-date. See:
       # https://github.com/Plutonomicon/cardano-transaction-lib/issues/839
-      checks = perSystem (system:
-        let
-          pkgs = nixpkgsFor system;
-        in
-        (psProjectFor pkgs).checks
-        // self.hsFlake.${system}.checks
-        // {
-          formatting-check = pkgs.runCommand "formatting-check"
-            {
-              nativeBuildInputs = with pkgs; [
-                easy-ps.purs-tidy
-                haskellPackages.fourmolu
-                nixpkgs-fmt
-                nodePackages.prettier
-                fd
-              ];
-            }
-            ''
-              cd ${self}
-              purs-tidy check $(fd -epurs)
-              fourmolu -m check -o -XTypeApplications -o -XImportQualifiedPost \
-                $(fd -ehs)
-              nixpkgs-fmt --check $(fd -enix --exclude='spago*')
-              prettier -c $(fd -ejs)
-              touch $out
-            '';
+      checks = perSystem
+        (system:
+          let
+            pkgs = nixpkgsFor system;
+          in
+          (psProjectFor pkgs).checks
+          // self.hsFlake.${system}.checks
+          // {
+            formatting-check = pkgs.runCommand "formatting-check"
+              {
+                nativeBuildInputs = with pkgs; [
+                  easy-ps.purs-tidy
+                  haskellPackages.fourmolu
+                  nixpkgs-fmt
+                  nodePackages.prettier
+                  fd
+                ];
+              }
+              ''
+                cd ${self}
+                purs-tidy check $(fd -epurs)
+                fourmolu -m check -o -XTypeApplications -o -XImportQualifiedPost \
+                  $(fd -ehs)
+                nixpkgs-fmt --check $(fd -enix --exclude='spago*')
+                prettier -c $(fd -ejs)
+                touch $out
+              '';
 
-          js-lint-check = pkgs.runCommand "js-lint-check"
-            {
-              nativeBuildInputs = [
-                pkgs.nodePackages.eslint
-                pkgs.fd
-              ];
-            }
-            ''
-              cd ${self}
-              eslint $(fd -ejs)
-              touch $out
-            '';
-        });
+            js-lint-check = pkgs.runCommand "js-lint-check"
+              {
+                nativeBuildInputs = [
+                  pkgs.nodePackages.eslint
+                  pkgs.fd
+                ];
+              }
+              ''
+                cd ${self}
+                eslint $(fd -ejs)
+                touch $out
+              '';
+
+            # Tries to build the template's Purescript project with HEAD on
+            # the current branch by manipulating the scaffold project's
+            # `spago-packages.nix`
+            template-freshness-check =
+              let
+                templateSpagoPkgs =
+                  import ./templates/ctl-scaffold/spago-packages.nix
+                    { inherit pkgs; };
+                name = "cardano-transaction-lib";
+                updatedPkgs = templateSpagoPkgs.inputs // {
+                  ${name} = pkgs.stdenv.mkDerivation {
+                    inherit name;
+                    src = self;
+                    version = self.rev or "dirty";
+                    phases = "installPhase";
+                    installPhase = ''
+                      cp -r $src $out
+                    '';
+                  };
+                };
+                spagoGlob = pkg:
+                  ''".spago/${pkg.name}/${pkg.version}/src/**/*.purs"'';
+                spagoGlobs = ps: builtins.toString (
+                  builtins.map spagoGlob (builtins.attrValues ps)
+                );
+                install-spago-deps = pkgs.writeShellApplication
+                  {
+                    name = "install-spago-deps";
+                    text =
+                      let
+                        cpPackage = pkg:
+                          let
+                            target = ".spago/${pkg.name}/${pkg.version}";
+                          in
+                          ''
+                            echo "Installing ${target}."
+                            mkdir -p ${target}
+                            cp -r ${toString pkg.outPath}/* ${target}
+                          '';
+                      in
+                      builtins.toString (builtins.map cpPackage (
+                        builtins.attrValues updatedPkgs
+                      ));
+                  };
+              in
+              pkgs.runCommand "template-freshness-check"
+                {
+                  buildInputs = [
+                    pkgs.easy-ps.psa
+                    pkgs.easy-ps.purs
+                    install-spago-deps
+                  ];
+                }
+                ''
+                  cp -r ${self}/templates/ctl-scaffold/* .
+                  install-spago-deps
+                  psa --strict --censor-lib --is-lib=.spago ${spagoGlobs updatedPkgs} \
+                    --censor-codes=UserDefinedWarning "./**/*.purs"
+                  touch $out
+                '';
+          });
 
       check = perSystem (system:
         (nixpkgsFor system).runCommand "combined-check"
