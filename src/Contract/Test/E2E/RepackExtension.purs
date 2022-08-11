@@ -9,7 +9,7 @@ import Contract.Test.E2E
   , withBrowser
   )
 import Control.Promise (Promise, toAffE)
-import Data.Maybe (Maybe(Just,Nothing), fromMaybe)
+import Data.Maybe (Maybe(Just, Nothing), fromMaybe)
 import Effect (Effect)
 import Effect.Aff (Aff, launchAff_)
 import Effect.Class (liftEffect)
