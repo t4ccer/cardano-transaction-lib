@@ -1,7 +1,10 @@
-/* Code copied from puppeteer-crx, MIT licensed */
+/* Code copied with slight modifications from puppeteer-crx, MIT licensed */
 
 exports._repackExtension = function (browser) {
   return function (extensionDir) {
+    console.log("start");
+    console.log(browser);
+    console.log(extensionDir);
     return async function () {
       const page = await browser.newPage();
       await page.goto("chrome://extensions");
@@ -22,7 +25,7 @@ exports._repackExtension = function (browser) {
       await page.evaluate(gotoExtManager);
 
       const input = await page.evaluateHandle(
-        `document.querySelector("body > extensions-manager").shadowRoot.querySelector("extensions-toolbar").shadowRoot.querySelector("extensions-pack-dialog").shadowRoot.querySelector("#root-dir").shadowRoot.querySelector("#input")`
+        `document.querySelector("body > extensions-manager").shadowRoot.querySelector("extensions-toolbar").shadowRoot.querySelector("extensions-pack-dialog").shadowRoot.querySelector("#rootDir").shadowRoot.querySelector("#input")`
       );
 
       await input.click();

@@ -8,11 +8,17 @@ import Contract.Test.E2E
   , parseOptions
   , withBrowser
   )
+
+import Control.Monad.Error.Class (try)
 import Control.Promise (Promise, toAffE)
+import Data.Functor (void)
 import Data.Maybe (Maybe(Just, Nothing), fromMaybe)
+import Data.Newtype (wrap)
 import Effect (Effect)
-import Effect.Aff (Aff, launchAff_)
+import Effect.Aff (Aff, launchAff_, delay)
 import Effect.Class (liftEffect)
+import Effect.Class.Console (log)
+import Node.FS.Sync (link, unlink)
 import Node.Path (FilePath)
 import Toppokki as Toppokki
 
@@ -30,16 +36,28 @@ data RepackOptions = RepackOptions
   }
 
 main = launchAff_ do
-  --  options <- execParser $ info optParser fullDesc
+  options <- execParser $ info optParser fullDesc
+
   let
+    realTarget = options.target
+    extVersion = "1.10.11_0"
+    extBase =
+      "/home/mike/snap/chromium/common/chromium/Default/Extensions/iifeegfcfhlhhnilhfoeihllenamcfgc"
+    extDir = extBase <> "/" <> extVersion
+    tgtFile = extBase <> "/" <> extVersion <> "." <> "crx"
+    keyFile = extBase <> "/" <> extVersion <> "." <> "pem"
     RepackOptions { extensionDir, target, chromeExe, chromeUserDataDir } =
       RepackOptions
         { chromeExe: Nothing
-        , extensionDir:
-            "/home/mike/.config/google-chrome/Default/Extensions/iifeegfcfhlhhnilhfoeihllenamcfgc/1.10.9_0"
-        , target: "my.crx"
+        , extensionDir: extDir
+        -- this seems to have no effect
+        , target: tgtFile
         , chromeUserDataDir: Nothing
         }
+
+  void $ try $ liftEffect $ unlink tgtFile
+  void $ try $ liftEffect $ unlink keyFile
+
   browser <- Toppokki.launch
     { args:
         [ "--disable-extensions-except=" <> extensionDir
@@ -49,8 +67,16 @@ main = launchAff_ do
         ]
     , headless: false
     , userDataDir: fromMaybe "" chromeUserDataDir
-    , executablePath: "/usr/bin/google-chrome"
+    , executablePath: "/snap/bin/chromium"
     }
 
   repackExtension browser extensionDir
+  delay $ wrap $ 1000.0
   Toppokki.close browser
+
+  liftEffect $ log $ " link " <> tgtFile <> " -> " <> realTarget
+
+  liftEffect do
+    link tgtFile realTarget
+    unlink tgtFile
+
