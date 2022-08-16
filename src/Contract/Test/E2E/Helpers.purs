@@ -1,14 +1,20 @@
 {- | This module is intended to be used for running custom E2E-tests -}
 module Contract.Test.E2E.Helpers
-  ( E2EOutput
+  ( Action(Action)
+  , E2EOutput
   , RunningExample(RunningExample)
+  , Selector(Selector)
   , WalletPassword(WalletPassword)
+  , byId
   , checkSuccess
   , delaySec
+  , doJQ
   , geroConfirmAccess
   , geroSign
+  , injectJQueryAll
   , namiConfirmAccess
   , namiSign
+  , retrieveJQuery
   , withExample
   ) where
 

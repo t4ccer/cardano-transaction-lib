@@ -98,6 +98,9 @@ gero-settings:
 		${e2e-test-chrome-dir}/Default/IndexedDB/chrome-extension_iifeegfcfhlhhnilhfoeihllenamcfgc_0.indexeddb.leveldb \
 		${e2e-test-chrome-dir}/Default/Extension\ State
 
+nami-crx:
+	spago run --main Contract.Test.E2E.RepackExtension -a "RepackExtension --target=ext.crx --chrome-exe=/snap/bin/chromium"
+
 format:
 	@purs-tidy format-in-place ${ps-sources}
 	nixpkgs-fmt ${nix-sources}

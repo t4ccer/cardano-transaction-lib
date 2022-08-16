@@ -2,9 +2,6 @@
 
 exports._repackExtension = function (browser) {
   return function (extensionDir) {
-    console.log("start");
-    console.log(browser);
-    console.log(extensionDir);
     return async function () {
       const page = await browser.newPage();
       await page.goto("chrome://extensions");

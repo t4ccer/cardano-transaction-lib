@@ -20,14 +20,20 @@ import Contract.Test.E2E.Feedback
   ) as Feedback
 
 import Contract.Test.E2E.Helpers
-  ( E2EOutput
+  ( Action(Action)
+  , E2EOutput
   , RunningExample(RunningExample)
+  , Selector(Selector)
   , WalletPassword(WalletPassword)
+  , byId
   , checkSuccess
   , delaySec
+  , doJQ
   , geroConfirmAccess
   , geroSign
+  , injectJQueryAll
   , namiConfirmAccess
   , namiSign
+  , retrieveJQuery
   , withExample
   ) as Helpers
