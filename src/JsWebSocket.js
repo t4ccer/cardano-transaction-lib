@@ -59,6 +59,7 @@ exports._onWsMessage = ws => logger => fn => () => {
 exports._wsSend = ws => logger => str => () => {
   logger(`sending: ${str}`)();
   ws.send(str);
+  logger(`sent: ${str}`)();
 };
 
 exports._wsReconnect = ws => () => {
