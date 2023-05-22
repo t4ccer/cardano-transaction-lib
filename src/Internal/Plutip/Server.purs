@@ -44,6 +44,7 @@ import Ctl.Internal.Plutip.Spawn
   , removeOnSignal
   , spawn
   , stop
+  , waitForStop
   )
 import Ctl.Internal.Plutip.Types
   ( ClusterStartupParameters
@@ -55,6 +56,7 @@ import Ctl.Internal.Plutip.Types
   , StopClusterResponse
   )
 import Ctl.Internal.Plutip.Utils (tmpdir)
+import Ctl.Internal.QueryM.UniqueId (uniqueId)
 import Ctl.Internal.Service.Error
   ( ClientError(ClientDecodeJsonError, ClientHttpError)
   )
@@ -83,7 +85,7 @@ import Data.Foldable (sum)
 import Data.HTTP.Method as Method
 import Data.Log.Level (LogLevel)
 import Data.Log.Message (Message)
-import Data.Maybe (Maybe(Nothing, Just), fromMaybe, maybe)
+import Data.Maybe (Maybe(Nothing, Just), maybe)
 import Data.Newtype (over, unwrap, wrap)
 import Data.Set as Set
 import Data.String.CodeUnits (indexOf) as String
@@ -109,7 +111,13 @@ import Effect.Ref as Ref
 import Mote (bracket) as Mote
 import Mote.Description (Description(Group, Test))
 import Mote.Monad (MoteT(MoteT), mapTest)
-import Node.ChildProcess (defaultSpawnOptions)
+import Node.ChildProcess
+  ( ChildProcess
+  , SpawnOptions
+  , defaultExecOptions
+  , defaultSpawnOptions
+  , exec
+  )
 import Node.FS.Sync (exists, mkdir) as FSSync
 import Node.Path (FilePath, dirname)
 import Type.Prelude (Proxy(Proxy))
@@ -250,8 +258,11 @@ startPlutipContractEnv plutipCfg distr cleanupRef = do
   configCheck plutipCfg
   startPlutipServer'
   ourKey /\ response <- startPlutipCluster'
+  startPostgres' response
   startOgmios' response
   startKupo' response
+  startClaritySyncServer'
+  void startClaritySyncWorkerExec
   { env, printLogs, clearLogs } <- mkContractEnv'
   wallets <- mkWallets' env ourKey response
   pure
@@ -296,6 +307,22 @@ startPlutipContractEnv plutipCfg distr cleanupRef = do
       (startPlutipCluster plutipCfg distrArray)
       (const $ void $ stopPlutipCluster plutipCfg)
       pure
+
+  startPostgres' :: ClusterStartupParameters -> Aff Unit
+  startPostgres' response =
+    bracket
+      (startPostgresServer response)
+      (stopChildProcessWithPortAndRemoveOnSignal $ UInt.fromInt 5432)
+      \(process /\ workingDir /\ _) -> do
+        liftEffect $ cleanupTmpDir process workingDir
+        void configurePostgresServer
+
+  startClaritySyncServer' :: Aff Unit
+  startClaritySyncServer' =
+    bracket
+      startClaritySyncServer
+      (stopChildProcessWithPort claritySyncServerPort)
+      (const $ pure unit)
 
   startOgmios' :: ClusterStartupParameters -> Aff Unit
   startOgmios' response =
@@ -375,7 +402,9 @@ configCheck cfg = do
   let
     services :: Array (UInt /\ String)
     services =
-      [ cfg.port /\ "plutip-server"
+      [ UInt.fromInt 5432 /\ "postgres"
+      , claritySyncServerPort /\ "clarity-sync-server"
+      , cfg.port /\ "plutip-server"
       , cfg.ogmiosConfig.port /\ "ogmios"
       , cfg.kupoConfig.port /\ "kupo"
       ]
@@ -403,9 +432,9 @@ startPlutipCluster
 startPlutipCluster cfg keysToGenerate = do
   let
     url = mkServerEndpointUrl cfg "start"
-    -- TODO: Non-default values for `slotLength` and `epochSize` break staking
-    -- rewards, see https://github.com/mlabs-haskell/plutip/issues/149
-    epochSize = fromMaybe (UInt.fromInt 80) cfg.clusterConfig.epochSize
+    -- TODO epoch size cannot currently be changed due to
+    -- https://github.com/mlabs-haskell/plutip/issues/149
+    epochSize = UInt.fromInt 80
   res <- do
     response <- liftAff
       ( Affjax.request
@@ -481,6 +510,45 @@ stopPlutipCluster cfg = do
         $ (decodeAeson <=< parseJsonStringToAeson)
             body
   either (liftEffect <<< throw <<< show) pure res
+
+startClaritySyncServer :: Aff ManagedProcess
+startClaritySyncServer = do
+  spawn "clarity-sync-server"
+    [ "--port"
+    , claritySyncServerPortString
+    , "--pg-conn"
+    , postgresConnectionString
+    ]
+    defaultSpawnOptions
+    Nothing
+
+startClaritySyncWorkerExec :: Aff ChildProcess
+startClaritySyncWorkerExec = liftEffect $ exec claritySyncWorkerCmdString
+  defaultExecOptions
+  (const $ pure unit)
+
+claritySyncWorkerCmdString :: String
+claritySyncWorkerCmdString =
+  "clarity-sync-worker --ogmios-port 1338 \
+  \--pg-conn \"host=localhost port=5432 user=clarity password=clarity dbname=clarity\" \
+  \--ogmios-host \"127.0.0.1\" \
+  \--from-tip"
+
+postgresConnectionString :: String
+postgresConnectionString =
+  "host=localhost port=5432 user=clarity password=clarity dbname=clarity"
+
+postgresPortString :: String
+postgresPortString = "5432"
+
+postgresHostString :: String
+postgresHostString = "127.0.0.1"
+
+claritySyncServerPort :: UInt
+claritySyncServerPort = UInt.fromInt 9001
+
+claritySyncServerPortString :: String
+claritySyncServerPortString = "9001"
 
 startOgmios :: PlutipConfig -> ClusterStartupParameters -> Aff ManagedProcess
 startOgmios cfg params = do
@@ -559,6 +627,79 @@ checkPlutipServer cfg = do
     $ const
     $ stopPlutipCluster cfg
 
+startPostgresServer
+  :: ClusterStartupParameters
+  -> Aff (ManagedProcess /\ String /\ OnSignalRef)
+startPostgresServer params = do
+  tmpDir <- liftEffect tmpdir
+  randomStr <- liftEffect $ uniqueId ""
+  let
+    workingDir = tmpDir <</>> randomStr
+    databaseDir = workingDir <</>> "postgres/data"
+    postgresSocket = workingDir <</>> "postgres"
+    testClusterDir = (dirname <<< dirname) params.nodeConfigPath
+  sig <- liftEffect $ cleanupOnSigint workingDir testClusterDir
+  waitForStop =<< spawn "initdb"
+    [ "--locale=C", "--encoding=UTF-8", databaseDir ]
+    defaultSpawnOptions
+    Nothing
+  pgChildProcess <- spawn "postgres"
+    [ "-D"
+    , databaseDir
+    , "-p"
+    , postgresPortString
+    , "-h"
+    , postgresHostString
+    , "-k"
+    , postgresSocket
+    ]
+    defaultSpawnOptions
+    Nothing
+  pure (pgChildProcess /\ workingDir /\ sig)
+
+configurePostgresServer :: Aff Unit
+configurePostgresServer = do
+  defaultRecovering $ waitForStop =<< spawn "psql"
+    [ "-h"
+    , postgresHostString
+    , "-p"
+    , postgresPortString
+    , "-d"
+    , "postgres"
+    , "-c"
+    , "\\q"
+    ]
+    defaultSpawnOptions
+    Nothing
+  waitForStop =<< spawn "psql"
+    [ "-h"
+    , postgresHostString
+    , "-p"
+    , postgresPortString
+    , "-d"
+    , "postgres"
+    , "-c"
+    , "CREATE ROLE " <> "clarity"
+        <> " WITH LOGIN SUPERUSER CREATEDB PASSWORD '"
+        <> "clarity"
+        <> "';"
+    ]
+    defaultSpawnOptions
+    Nothing
+  waitForStop =<< spawn "createdb"
+    [ "-h"
+    , postgresHostString
+    , "-p"
+    , postgresPortString
+    , "-U"
+    , "clarity"
+    , "-O"
+    , "clarity"
+    , "clarity"
+    ]
+    defaultSpawnOptions
+    Nothing
+
 -- | Kill a process and wait for it to stop listening on a specific port.
 stopChildProcessWithPort :: UInt -> ManagedProcess -> Aff Unit
 stopChildProcessWithPort port childProcess = do
@@ -620,3 +761,11 @@ defaultRetryPolicy = limitRetriesByCumulativeDelay (Milliseconds 3000.00) $
 mkServerEndpointUrl :: PlutipConfig -> String -> String
 mkServerEndpointUrl cfg path = do
   "http://" <> cfg.host <> ":" <> UInt.toString cfg.port <</>> path
+
+defaultRecovering :: forall (a :: Type). Aff a -> Aff a
+defaultRecovering f =
+  recovering retryPolicy ([ \_ _ -> pure true ]) $ const f
+  where
+  retryPolicy :: RetryPolicy
+  retryPolicy = limitRetriesByCumulativeDelay (Milliseconds 3000.00) $
+    constantDelay (Milliseconds 100.0)
