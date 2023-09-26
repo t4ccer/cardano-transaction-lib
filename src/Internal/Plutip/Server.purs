@@ -1,12 +1,14 @@
 module Ctl.Internal.Plutip.Server
   ( runPlutipContract
   , withPlutipContractEnv
+  , withPlutipContractEnvWithExtraServices
   , startPlutipCluster
   , stopPlutipCluster
   , startPlutipServer
   , checkPlutipServer
   , stopChildProcessWithPort
   , testPlutipContracts
+  , cleanUpBracket
   ) where
 
 import Prelude
@@ -135,10 +137,23 @@ withPlutipContractEnv
   -> distr
   -> (ContractEnv -> wallets -> Aff a)
   -> Aff a
-withPlutipContractEnv plutipCfg distr cont = do
+withPlutipContractEnv =
+  withPlutipContractEnvWithExtraServices (const $ pure unit)
+
+-- | Provide a `ContractEnv` connected to Plutip.
+-- | can be used to run multiple `Contract`s using `runContractInEnv`.
+withPlutipContractEnvWithExtraServices
+  :: forall (distr :: Type) (wallets :: Type) (a :: Type)
+   . UtxoDistribution distr wallets
+  => (ClusterStartupParameters -> Aff Unit)
+  -> PlutipConfig
+  -> distr
+  -> (ContractEnv -> wallets -> Aff a)
+  -> Aff a
+withPlutipContractEnvWithExtraServices extraServices plutipCfg distr cont = do
   cleanupRef <- liftEffect $ Ref.new mempty
   Aff.bracket
-    (try $ startPlutipContractEnv plutipCfg distr cleanupRef)
+    (try $ startPlutipContractEnv extraServices plutipCfg distr cleanupRef)
     (const $ runCleanup cleanupRef)
     $ liftEither >=> \{ env, wallets, printLogs } ->
         whenError printLogs (cont env wallets)
@@ -161,7 +176,8 @@ testPlutipContracts plutipCfg tp = do
     cleanupRef <- liftEffect $ Ref.new mempty
     -- Sets a single Mote bracket at the top level, it will be run for all
     -- immediate tests and groups
-    bracket (startPlutipContractEnv plutipCfg distr cleanupRef)
+    bracket
+      (startPlutipContractEnv (const $ pure unit) plutipCfg distr cleanupRef)
       (runCleanup cleanupRef)
       $ flip mapTest tests \test { env, wallets, printLogs, clearLogs } -> do
           whenError printLogs (runContractInEnv env (test wallets))
@@ -260,7 +276,8 @@ execDistribution (MoteT mote) = execWriterT mote <#> go
 startPlutipContractEnv
   :: forall (distr :: Type) (wallets :: Type)
    . UtxoDistribution distr wallets
-  => PlutipConfig
+  => (ClusterStartupParameters -> Aff Unit)
+  -> PlutipConfig
   -> distr
   -> Ref (Array (Aff Unit))
   -> Aff
@@ -269,12 +286,13 @@ startPlutipContractEnv
        , printLogs :: Aff Unit
        , clearLogs :: Aff Unit
        }
-startPlutipContractEnv plutipCfg distr cleanupRef = do
+startPlutipContractEnv extraServices plutipCfg distr cleanupRef = do
   configCheck plutipCfg
   startPlutipServer'
   ourKey /\ response <- startPlutipCluster'
   startOgmios' response
   startKupo' response
+  extraServices response
   { env, printLogs, clearLogs } <- mkContractEnv'
   wallets <- mkWallets' env ourKey response
   pure
@@ -292,11 +310,7 @@ startPlutipContractEnv plutipCfg distr cleanupRef = do
     -> (a -> Aff Unit)
     -> (a -> Aff b)
     -> Aff b
-  bracket before after action = do
-    Aff.bracket
-      before
-      (\res -> liftEffect $ Ref.modify_ ([ after res ] <> _) cleanupRef)
-      action
+  bracket = cleanUpBracket cleanupRef
 
   startPlutipServer' :: Aff Unit
   startPlutipServer' =
@@ -391,6 +405,21 @@ startPlutipContractEnv plutipCfg distr cleanupRef = do
         , printLogs: pure unit
         , clearLogs: pure unit
         }
+
+-- Similar to `Aff.bracket`, except cleanup is pushed onto a stack to be run
+-- later.
+cleanUpBracket
+  :: forall (a :: Type) (b :: Type)
+   . Ref (Array (Aff Unit))
+  -> Aff a
+  -> (a -> Aff Unit)
+  -> (a -> Aff b)
+  -> Aff b
+cleanUpBracket cleanupRef before after action = do
+  Aff.bracket
+    before
+    (\res -> liftEffect $ Ref.modify_ ([ after res ] <> _) cleanupRef)
+    action
 
 -- | Throw an exception if `PlutipConfig` contains ports that are occupied.
 configCheck :: PlutipConfig -> Aff Unit
